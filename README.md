@@ -11,8 +11,10 @@
 
     python manage.py migrate
 
-3. Create default user (admin:admin1234)
+3. Create default user (admin:admin1234).
+
     python manage.py createuser
 
-4. Run application
+4. Run application.
+
     python manage.py runserver
