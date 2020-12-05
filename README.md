@@ -3,7 +3,8 @@
 ## Run Directory App
 1. Goto the directory where requirements.txt file located run the below commands to install dependancies.
 
-    pip install -r requirements.txt
+    conda create --name <env> --file requirements.txt
+    
 
 2. Navigate to directory folder where manage.py file located run the beloww commands.
 
