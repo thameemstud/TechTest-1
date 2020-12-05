@@ -18,3 +18,5 @@
 4. Run application.
 
     python manage.py runserver
+    
+5. For bulk import upload csv file containing information about teacher and for images upload zip folder which contains the images. The csv format should be the same as the provided one with code.
