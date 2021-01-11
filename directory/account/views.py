@@ -1,102 +1,116 @@
-import csv
-from io import TextIOWrapper
-import zipfile
-import os
+import csv, io
+from zipfile import ZipFile
+from django.shortcuts import render, get_object_or_404, redirect
+from django.http import HttpResponse
 
-from django.shortcuts import render
-from django.views.generic.list import ListView
-from django.views.generic.base import TemplateResponseMixin, View
+from django.utils import timezone
+from django.contrib.auth.decorators import login_required
+from django.conf import settings
+from django.forms import ValidationError
 from django.contrib import messages
 from django.core.files import File
-from django.conf import settings
-from django.contrib.auth.mixins import LoginRequiredMixin
+
+from django.views.generic import View
+from django.views.generic.list import ListView
 from django.views.generic.detail import DetailView
+from django.contrib.auth.mixins import LoginRequiredMixin
 
-from .models import Teacher, Subject
-from .forms import UploadFileForm, TeacherForm
+from django.urls import reverse_lazy
+from django.http import HttpResponseRedirect
 
-class TeacherListView(ListView):
+from .utils import EmailValidatorMixin
+from .models import Teacher,Subject
+from .forms import BulkUploadForm
+
+
+
+class Home(ListView):
   model = Teacher
-  template_name = 'account/list.html'
-
+  template_name = 'directory/home.html'
+  
   def get_context_data(self, **kwargs):
     context = super().get_context_data(**kwargs)
-    last_name_chars = []
-    subject_chars = []
-    for row in Teacher.objects.values_list('last_name', flat=True).filter(
-      last_name__isnull=False).exclude(last_name='').order_by('last_name').distinct():
-      first_char = row.strip().upper()[0]
-      if first_char not in last_name_chars:
-        last_name_chars.append(first_char)
-    for row in Subject.objects.values_list('name', flat=True).filter(
-      name__isnull=False).exclude(name='').order_by('name').distinct():
-      first_char = row.strip().upper()[0]
-      if first_char not in subject_chars:
-        subject_chars.append(first_char)
-    context['last_name_chars'] = last_name_chars
-    context['subject_chars'] = subject_chars
+    context["filter_lastname"] = self.request.GET.get('filter_lastname', "")
+    context["filter_subject"] = self.request.GET.get('filter_subject', "")
     return context
 
   def get_queryset(self):
-    queryset = self.model.objects.all()
-    if self.request.GET.get('val'):
-      val = self.request.GET.get('val')
-      if self.request.GET.get('type') and self.request.GET.get('type') == 'name':
-        queryset = queryset.filter(last_name__istartswith=val)
-      if self.request.GET.get('type') and self.request.GET.get('type') == 'subject':
-        queryset = queryset.filter(subjects__name__istartswith=val)
-    return queryset
+    qs = self.model.objects.all()
+    filter_lastname = self.request.GET.get('filter_lastname', "")
+    filter_subject = self.request.GET.get('filter_subject', "")
+    if filter_lastname:
+        qs = qs.filter(lastName__istartswith=filter_lastname.strip()[:2])
+    if filter_subject:
+        qs = qs.filter(subject__title__istartswith=filter_subject.strip()[:2])
+    
+    return qs
 
 class TeacherDetailView(DetailView):
   model = Teacher
+  template_name = 'directory/detail.html'
 
 
-class BulkImportView(LoginRequiredMixin, TemplateResponseMixin, View):
-  template_name = 'account/import.html'
-  def get(self, request, *args, **kwargs):
-    form = UploadFileForm()
-    return render(request, self.template_name, {'form': form})
 
-  def post(self, request, *args, **kwargs):
-    zippath = settings.MEDIA_ROOT.joinpath('tmp').joinpath('teachers.zip')
-    form = UploadFileForm(request.POST, request.FILES)
-    if form.is_valid():
-      images = request.FILES['images']
-      with open(zippath, 'wb+') as destination:
-        for chunk in images.chunks():
-          destination.write(chunk)
+class TeacherCreateView(EmailValidatorMixin, LoginRequiredMixin, View):
 
-      names = request.FILES['names']
-      archive = zipfile.ZipFile(zippath, 'r')
-      data_bytes = TextIOWrapper(request.FILES['names'].file,
-                                 encoding='utf-8')
-      data_reader = csv.DictReader(data_bytes)
-    try:
-      for row in data_reader:
+    form = BulkUploadForm
+    model = Teacher
+    template_name = "directory/create.html"
+    subjet_count = 5
+    redirect_field_name = 'redirect_to'
 
-        if row['First Name'].strip() == '' or row['Email Address'].strip() == '':
-          raise Exception('First Name / Email cant be blank')
-        teacher = Teacher()
-        teacher.first_name = row['First Name'].strip()
-        teacher.last_name = row['Last Name'].strip()
-        teacher.email = row['Email Address'].strip()
-        teacher.phone = row['Phone Number'].strip()
-        teacher.room_no = row['Room Number'].strip()
-        teacher.save()
-        subjects = row['Subjects taught'].split(',')
-        if row['Profile picture'] in archive.namelist():
-          image = archive.open(row['Profile picture'], 'r')
-          df = File(image)
-          teacher.profile_picture.save(row['Profile picture'], df, save=True)
-        for subj in subjects:
-          if subj != '':
-            subject, _ = Subject.objects.get_or_create(name=subj.strip().upper())
-            if teacher.subjects.count() < 5:
-              teacher.subjects.add(subject)
-      messages.success(request, 'Data inserted successfully')
-    except Exception as e:
-      messages.info(request, e)
-    finally:
-      #634657778
-      os.remove(zippath)
-    return render(request, self.template_name, {'form': form})
+    def get(self, request, *args, **kwargs):
+            context = {'form': self.form()}
+            return render(request, self.template_name, context)
+
+    def post(self, request, *args, **kwargs):
+        form = self.form(request.POST, request.FILES)
+        if form.is_valid():
+            
+            try:
+                csv_file = form.cleaned_data["csv_file"]
+                file_obj = csv_file.read().decode('utf-8')
+                csv_data = csv.reader(io.StringIO(file_obj), delimiter=',')
+
+                zip_file = form.cleaned_data["zip_file"]
+                zipfile_obj = ZipFile(zip_file, 'r')
+                
+        
+                columns = next(csv_data)
+                for row in csv_data:
+                    email = row[3].strip()
+                    
+                    if self.validate_email(email=email):
+                        if not self.model.objects.filter(
+                                            email__iexact=email
+                                        ).exists():
+                            teacher_obj = self.model()
+                            teacher_obj.firstName = row[0]
+                            teacher_obj.lastName = row[1]
+                            teacher_obj.email = email
+                            teacher_obj.save()
+                            subject_list = row[6].strip().split(",")
+                            subject_list = [item.strip().upper() for item  in subject_list if item.strip()]
+                            teacher_subject_list = subject_list[:self.subjet_count]
+                            for subj in teacher_subject_list:
+                                sobj, created = Subject.objects.get_or_create(
+                                                        title=subj
+                                                    )
+                                teacher_obj.subject.add(sobj)
+                            pic_name = row[4].strip()
+                            if pic_name in zipfile_obj.namelist():
+                                file_obj = File(zipfile_obj.open(pic_name, 'r'))
+                                teacher_obj.profilePicture.save(pic_name, file_obj, save=True)
+                
+                return HttpResponseRedirect(self.get_success_url())    
+            
+            except Exception as e:
+                messages.error(request, e)
+            
+            
+            
+        return render(request, self.template_name, {'form': form})
+
+
+    def get_success_url(self):
+        return reverse_lazy("dir-home")
